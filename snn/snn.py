@@ -207,6 +207,18 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
                            ensure_min_samples=max(self.ensemble_size * 3, 100),
                            multi_output=False, y_numeric=True,
                            estimator='SNNRegressor')
+        if 'feature_names' in kwargs:
+            feature_names = kwargs['feature_names']
+            if (not isinstance(feature_names, list)) and \
+                    (not isinstance(feature_names, tuple)):
+                err_msg = f'`{feature_names}` is wrong! ' \
+                          f'Expected `{type([1, 2])}`, ' \
+                          f'got `{type(kwargs["feature_names"])}`.'
+                raise ValueError(err_msg)
+        else:
+            max_number_width = len(str(X_.shape[1]))
+            feature_names = ['x{0:>0{1}}'.format(col_idx, max_number_width)
+                             for col_idx in range(X_.shape[1])]
         if hasattr(self, 'nn_'):
             del self.nn_
         if hasattr(self, 'preprocessor_'):
@@ -216,6 +228,7 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
         gc.collect()
         if self.clear_session:
             tf.keras.backend.clear_session()
+        self.preprocessor_ = build_preprocessor(X_, feature_names)
         pass
 
     @staticmethod
