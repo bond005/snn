@@ -203,7 +203,8 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
             clear_session=self.clear_session
         )
         X_, y_ = check_X_y(X, y,
-                           force_all_finite='allow-nan', ensure_min_samples=10,
+                           force_all_finite='allow-nan',
+                           ensure_min_samples=max(self.ensemble_size * 3, 100),
                            multi_output=False, y_numeric=True,
                            estimator='SNNRegressor')
         if hasattr(self, 'nn_'):
