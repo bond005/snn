@@ -1,3 +1,4 @@
+import gc
 from typing import List
 
 import numpy as np
@@ -13,6 +14,7 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.preprocessing import Binarizer, KBinsDiscretizer
+from sklearn.utils import check_X_y
 import tensorflow as tf
 import tensorflow_addons as tfa
 import tensorflow_probability as tfp
@@ -173,7 +175,8 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
                  hidden_layer_size: int = 512, n_layers: int = 18,
                  dropout_rate: float = 3e-4,
                  max_epochs: int = 1000, patience: int = 15,
-                 minibatch_size: int = 4096, verbose: bool = False):
+                 minibatch_size: int = 4096, validation_fraction: float = 0.1,
+                 verbose: bool = False, clear_session: bool = True):
         super(SNNRegressor, self).__init__()
         self.ensemble_size = ensemble_size
         self.hidden_layer_size = hidden_layer_size
@@ -183,8 +186,35 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
         self.patience = patience
         self.minibatch_size = minibatch_size
         self.verbose = verbose
+        self.validation_fraction = validation_fraction
+        self.clear_session = clear_session
 
     def fit(self, X, y, **kwargs):
+        self.check_params(
+            ensemble_size=self.ensemble_size,
+            hidden_layer_size=self.hidden_layer_size,
+            n_layers=self.n_layers,
+            minibatch_size=self.minibatch_size,
+            dropout_rate=self.dropout_rate,
+            max_epochs=self.max_epochs,
+            patience=self.patience,
+            validation_fraction=self.validation_fraction,
+            verbose=self.verbose,
+            clear_session=self.clear_session
+        )
+        X_, y_ = check_X_y(X, y,
+                           force_all_finite='allow-nan', ensure_min_samples=10,
+                           multi_output=False, y_numeric=True,
+                           estimator='SNNRegressor')
+        if hasattr(self, 'nn_'):
+            del self.nn_
+        if hasattr(self, 'preprocessor_'):
+            del self.preprocessor_
+        if hasattr(self, 'postprocessors_'):
+            del self.postprocessors_
+        gc.collect()
+        if self.clear_session:
+            tf.keras.backend.clear_session()
         pass
 
     @staticmethod
@@ -250,8 +280,20 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
         SNNRegressor.check_integer_param('n_layers', **kwargs)
         SNNRegressor.check_integer_param('max_epochs', **kwargs)
         SNNRegressor.check_boolean_param('verbose', **kwargs)
+        SNNRegressor.check_boolean_param('clear_session', **kwargs)
         SNNRegressor.check_float_param('dropout_rate', **kwargs)
+        SNNRegressor.check_float_param('validation_fraction', **kwargs)
         if kwargs['dropout_rate'] < 0.0:
             err_msg = f'`dropout_rate` is wrong! Expected a non-negative ' \
                       f'value, but {kwargs["dropout_rate"]} is negative!'
+            raise ValueError(err_msg)
+        if kwargs['validation_fraction'] <= 0.0:
+            err_msg = f'`validation_fraction` is wrong! Expected a ' \
+                      f'floating-point value in (0.0, 1.0), ' \
+                      f'but {kwargs["validation_fraction"]} is inadmissible!'
+            raise ValueError(err_msg)
+        if kwargs['validation_fraction'] >= 1.0:
+            err_msg = f'`validation_fraction` is wrong! Expected a ' \
+                      f'floating-point value in (0.0, 1.0), ' \
+                      f'but {kwargs["validation_fraction"]} is inadmissible!'
             raise ValueError(err_msg)
