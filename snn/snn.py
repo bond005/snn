@@ -428,7 +428,9 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
         gc.collect()
         if self.clear_session:
             tf.keras.backend.clear_session()
-        self.random_gen_ = np.random.default_rng(seed=self.random_seed)
+        self.random_gen_ = np.random.default_rng(
+            seed=(self.random_seed if hasattr(self, 'random_seed') else None)
+        )
         self.preprocessor_ = build_preprocessor(
             X_, feature_names,
             verbose=self.verbose,
@@ -448,14 +450,16 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
         y_ = y_[all_indices]
         del all_indices
         gc.collect()
+        # n_classes = max(3, min(100, int(round(np.sqrt(y_.shape[0])))))
+        n_classes = 5
         y_class_ = KBinsDiscretizer(
-            n_bins=10,
+            n_bins=n_classes,
             encode='ordinal',
-            strategy='uniform',
-            dtype=np.int32
+            strategy='kmeans'
         ).fit_transform(y_.reshape((y_.shape[0], 1))).reshape((y_.shape[0],))
+        y_class_ = y_class_.astype(np.int32)
         if self.verbose:
-            class_freq = np.zeros((10,), dtype=np.int32)
+            class_freq = np.zeros((n_classes,), dtype=np.int32)
             for class_idx in y_class_:
                 class_freq[class_idx] += 1
             max_num_width = max(map(lambda it: len(str(it)), class_freq))
@@ -463,28 +467,30 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
                 print('Class {0:>02}: {1:>{2}} samples'.format(class_idx, freq,
                                                                max_num_width))
             print('')
-        splitting = StratifiedKFold(
+        splitting = list(StratifiedKFold(
             n_splits=self.ensemble_size,
             shuffle=True,
             random_state=self.random_gen_.integers(0, 2147483647)
-        ).split(X_, y_class_)
+        ).split(X_, y_class_))
         self.deep_ensemble_ = []
         self.names_of_deep_ensemble_ = []
         max_epochs = 1000
         patience = 15
-        steps_per_epoch = X_.shape[0] // self.minibatch_size
         for alg_id in range(self.ensemble_size):
-            model_uuid = str(uuid.uuid1()).split()[0]
+            model_uuid = str(uuid.uuid1()).split('-')[0]
             model_name = f'snn_regressor_{alg_id + 1}_{model_uuid}'
             regression_output_name = f'{model_name}_distribution'
             self.names_of_deep_ensemble_.append(model_name)
             train_index, test_index = splitting[alg_id]
+            print(f'y_[test_index] = {y_[test_index]}')
+            print(f'y_class_[test_index] = {y_class_[test_index]}')
+            steps_per_epoch = len(train_index) // self.minibatch_size
             train_dataset = tf.data.Dataset.from_tensor_slices(
                 (
                     X_[train_index],
                     (
-                        y_[train_index],
-                        y_class_[train_index]
+                        y_[train_index].flatten(),
+                        y_class_[train_index].flatten()
                     )
                 )
             ).repeat().shuffle(len(train_index)).batch(self.minibatch_size)
@@ -492,8 +498,8 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
                 (
                     X_[test_index],
                     (
-                        y_[test_index],
-                        y_class_[test_index]
+                        y_[test_index].flatten(),
+                        y_class_[test_index].flatten()
                     )
                 )
             ).batch(self.minibatch_size)
@@ -515,7 +521,7 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
             callbacks = [
                 tf.keras.callbacks.EarlyStopping(
                     monitor=f'val_{regression_output_name}_mean_absolute_error',
-                    restore_best_weights=True,
+                    restore_best_weights=True, mode='min',
                     patience=patience, verbose=self.verbose
                 )
             ]
@@ -560,7 +566,8 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
             'verbose': self.verbose,
             'validation_fraction': self.validation_fraction,
             'clear_session': self.clear_session,
-            'random_seed': self.random_seed
+            'random_seed': (self.random_seed if hasattr(self, 'random_seed')
+                            else None)
         }
 
     def set_params(self, **params):
@@ -718,7 +725,6 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
                       f'floating-point value in (0.0, 1.0), ' \
                       f'but {kwargs["validation_fraction"]} is inadmissible!'
             raise ValueError(err_msg)
-        if 'random_seed' not in kwargs:
-            raise ValueError('`random_seed` is not specified!')
-        if kwargs['random_seed'] is not None:
-            SNNRegressor.check_integer_param('random_seed', **kwargs)
+        if 'random_seed' in kwargs:
+            if kwargs['random_seed'] is not None:
+                SNNRegressor.check_integer_param('random_seed', **kwargs)
