@@ -1,0 +1,7 @@
+numpy
+scipy
+six
+sklearn
+tensorflow
+tensorflow_addons
+tensorflow_probability

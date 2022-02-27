@@ -361,7 +361,7 @@ def predict_by_ensemble(input_data: np.ndarray,
         )
         predictions_of_ensemble[model_idx, :, 0] = y_mean
         predictions_of_ensemble[model_idx, :, 1] = y_var
-    return predictions_of_ensemble
+    return np.mean(predictions_of_ensemble, axis=0)
 
 
 class SNNRegressor(BaseEstimator, RegressorMixin):
@@ -482,8 +482,6 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
             regression_output_name = f'{model_name}_distribution'
             self.names_of_deep_ensemble_.append(model_name)
             train_index, test_index = splitting[alg_id]
-            print(f'y_[test_index] = {y_[test_index]}')
-            print(f'y_class_[test_index] = {y_class_[test_index]}')
             steps_per_epoch = len(train_index) // self.minibatch_size
             train_dataset = tf.data.Dataset.from_tensor_slices(
                 (

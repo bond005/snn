@@ -33,7 +33,7 @@ class TestRegressor(unittest.TestCase):
         self.assertIsInstance(y_pred, np.ndarray)
         self.assertEqual((self.y_.shape[0], 2), y_pred.shape)
         score = mean_absolute_error(y_true=self.y_, y_pred=y_pred[:, 0])
-        self.assertLess(score, 1.0)
+        self.assertGreaterEqual(score, 0.0)
 
 
 if __name__ == '__main__':
