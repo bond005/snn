@@ -318,6 +318,82 @@ def predict_by_ensemble(input_data: np.ndarray,
     return np.mean(predictions_of_ensemble, axis=0)
 
 
+def discretize_targets(targets: np.ndarray, min_freq: int,
+                       verbose: bool) -> np.ndarray:
+    n_classes = max(3, min(100, int(round(np.sqrt(targets.shape[0])))))
+    discretized = KBinsDiscretizer(
+        n_bins=n_classes,
+        encode='ordinal',
+        strategy='kmeans'
+    ).fit_transform(
+        targets.reshape((targets.shape[0], 1))
+    ).reshape((targets.shape[0],)).astype(np.int32)
+    discretized = discretized.astype(np.int32)
+    freq = np.zeros((n_classes,), dtype=np.int32)
+    for class_idx in discretized:
+        freq[class_idx] += 1
+    indices_of_classes = dict()
+    for sample_idx, class_idx in enumerate(discretized):
+        if class_idx in indices_of_classes:
+            indices_of_classes[class_idx].append(sample_idx)
+        else:
+            indices_of_classes[class_idx] = [sample_idx]
+    if verbose:
+        print(f'Number of non-empty classes is {len(indices_of_classes)} '
+              f'from {n_classes}.')
+        max_cls_width = len(str(n_classes))
+        max_num_width = max(map(lambda it: str(len(indices_of_classes[it])),
+                                indices_of_classes))
+        for class_idx in sorted(list(indices_of_classes.keys())):
+            print('Class {0:<{1}}   {2:>{3}}'.format(
+                class_idx, max_cls_width, len(indices_of_classes[class_idx]),
+                max_num_width
+            ))
+        print('')
+    for class_idx in sorted(list(indices_of_classes.keys())):
+        if len(indices_of_classes[class_idx]) <= max(0, min_freq):
+            del indices_of_classes[class_idx]
+    if len(indices_of_classes) < 3:
+        err_msg = f'Number of non-empty classes = {len(indices_of_classes)} ' \
+                  f'is too small!'
+        raise ValueError(err_msg)
+    list_of_nonempty_classes = sorted(list(indices_of_classes.keys()))
+    set_of_nonempty_classes = set(list_of_nonempty_classes)
+    indices_map = dict()
+    for sample_idx in range(discretized.shape[0]):
+        class_idx = discretized[sample_idx]
+        if class_idx not in set_of_nonempty_classes:
+            best_class_idx = list_of_nonempty_classes[0]
+            best_dist = min(map(
+                lambda other_idx: abs(targets[sample_idx] - targets[other_idx]),
+                indices_of_classes[best_class_idx]
+            ))
+            for cur_class_idx in list_of_nonempty_classes[1:]:
+                cur_dist = min(map(
+                    lambda other_idx: abs(targets[sample_idx] -
+                                          targets[other_idx]),
+                    indices_of_classes[cur_class_idx]
+                ))
+                if cur_dist < best_dist:
+                    best_class_idx = cur_class_idx
+                    best_dist = cur_dist
+            discretized[sample_idx] = best_class_idx
+        class_idx = discretized[sample_idx]
+        if class_idx not in indices_map:
+            indices_map[class_idx] = len(indices_map)
+    for sample_idx in range(discretized.shape[0]):
+        class_idx = discretized[sample_idx]
+        discretized[sample_idx] = indices_map[class_idx]
+    new_number_of_classes = int(np.max(discretized) + 1)
+    if verbose:
+        print(f'New number of classes is {new_number_of_classes}.')
+        print('')
+    assert np.min(discretized) == 0
+    assert np.max(discretized) == (new_number_of_classes - 1)
+    assert len(set(discretized.tolist())) == new_number_of_classes
+    return discretized
+
+
 class SNNRegressor(BaseEstimator, RegressorMixin):
     def __init__(self, ensemble_size: int = 20,
                  hidden_layer_size: int = 512, n_layers: int = 18,
@@ -404,13 +480,8 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
         y_ = y_[all_indices]
         del all_indices
         gc.collect()
-        self.n_classes_ = max(3, min(100, int(round(np.sqrt(y_.shape[0])))))
-        y_class_ = KBinsDiscretizer(
-            n_bins=self.n_classes_,
-            encode='ordinal',
-            strategy='kmeans'
-        ).fit_transform(y_.reshape((y_.shape[0], 1))).reshape((y_.shape[0],))
-        y_class_ = y_class_.astype(np.int32)
+        y_class_ = discretize_targets(y_, 3, self.verbose)
+        self.n_classes_ = int(np.max(y_class_) + 1)
         y_class__ = np.zeros((y_class_.shape[0], self.n_classes_),
                              dtype=np.float32)
         for sample_idx, class_idx in enumerate(y_class_):
