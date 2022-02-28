@@ -1,6 +1,7 @@
 import copy
 import gc
 import random
+import re
 from typing import List, Tuple, Union
 import uuid
 
@@ -472,6 +473,7 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
             shuffle=True,
             random_state=self.random_gen_.integers(0, 2147483647)
         ).split(X_, y_class_))
+        self.feature_vector_size_ = X_.shape[1]
         self.deep_ensemble_ = []
         self.names_of_deep_ensemble_ = []
         max_epochs = 1000
@@ -502,7 +504,7 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
                 )
             ).batch(self.minibatch_size)
             new_model = build_neural_network(
-                input_size=X_.shape[1],
+                input_size=self.feature_vector_size_,
                 layer_size=self.hidden_layer_size,
                 n_layers=self.n_layers,
                 dropout_rate=self.dropout_rate,
@@ -573,6 +575,42 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
             self.__setattr__(parameter, value)
         return self
 
+    def _copy_deep_ensemble(self) -> List[tf.keras.Model]:
+        new_deep_ensemble = []
+        re_for_hidden_layer = re.compile(r'_dense\d+$')
+        for alg_id in range(self.ensemble_size):
+            model_uuid = str(uuid.uuid1()).split('-')[0]
+            model_name = f'snn_regressor_{alg_id + 1}_{model_uuid}'
+            new_model = build_neural_network(
+                input_size=self.feature_vector_size_,
+                layer_size=self.hidden_layer_size,
+                n_layers=self.n_layers,
+                dropout_rate=self.dropout_rate,
+                scale_coeff=self.postprocessor_.scale_[0],
+                nn_name=model_name
+            )
+            new_model.build(input_shape=(None, self.feature_vector_size_))
+            old_model = self.deep_ensemble_[alg_id]
+            n_copied = 0
+            for old_layer, new_layer in zip(old_model.layers, new_model.layers):
+                if old_layer.name.endswith('_projection'):
+                    copy_weight = True
+                elif old_layer.name.endswith('_output'):
+                    copy_weight = True
+                else:
+                    if re_for_hidden_layer.search(old_layer.name) is None:
+                        copy_weight = False
+                    else:
+                        copy_weight = True
+                if copy_weight:
+                    n_copied += 1
+                    new_layer.set_weights(old_layer.get_weights())
+            if n_copied < 1:
+                err_msg = f'The neural network {alg_id + 1} cannot be copied!'
+                raise ValueError(err_msg)
+            new_deep_ensemble.append(new_model)
+        return new_deep_ensemble
+
     def __copy__(self):
         cls = self.__class__
         result = cls.__new__(cls)
@@ -592,7 +630,7 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
         try:
             check_is_fitted(self, ['deep_ensemble_', 'names_of_deep_ensemble_',
                                    'preprocessor_', 'postprocessor_',
-                                   'random_gen_'])
+                                   'random_gen_', 'feature_vector_size_'])
             is_fitted = True
         except:
             is_fitted = False
@@ -602,6 +640,7 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
             result.preprocessor_ = self.preprocessor_
             result.postprocessor_ = self.postprocessor_
             result.random_gen_ = self.random_gen_
+            result.feature_vector_size_ = self.feature_vector_size_
         return result
 
     def __deepcopy__(self, memodict={}):
@@ -624,11 +663,12 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
         try:
             check_is_fitted(self, ['deep_ensemble_', 'names_of_deep_ensemble_',
                                    'preprocessor_', 'postprocessor_',
-                                   'random_gen_'])
+                                   'random_gen_', 'feature_vector_size_'])
             is_fitted = True
         except:
             is_fitted = False
         if is_fitted:
+            result.feature_vector_size_ = self.feature_vector_size_
             result.names_of_deep_ensemble_ = copy.deepcopy(
                 self.names_of_deep_ensemble_,
                 memo=memodict
@@ -642,6 +682,101 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
             else:
                 result.random_gen_ = copy.deepcopy(self.random_gen_,
                                                    memo=memodict)
+            result.deep_ensemble_ = self._copy_deep_ensemble()
+        return result
+
+    def __getstate__(self):
+        params = self.get_params(True)
+        try:
+            check_is_fitted(self, ['deep_ensemble_', 'names_of_deep_ensemble_',
+                                   'preprocessor_', 'postprocessor_',
+                                   'random_gen_', 'feature_vector_size_'])
+            is_fitted = True
+        except:
+            is_fitted = False
+        if is_fitted:
+            params['names_of_deep_ensemble_'] = copy.deepcopy(
+                self.names_of_deep_ensemble_
+            )
+            params['feature_vector_size_'] = self.feature_vector_size_
+            params['preprocessor_'] = copy.deepcopy(self.preprocessor_)
+            params['postprocessor_'] = copy.deepcopy(self.postprocessor_)
+            if self.random_gen_ is None:
+                params['random_gen_'] = None
+            else:
+                params['random_gen_'] = copy.deepcopy(self.random_gen_)
+            params['deep_ensemble_'] = []
+            for alg_id in range(self.ensemble_size):
+                params['deep_ensemble_'].append(
+                    self.deep_ensemble_[alg_id].get_weights()
+                )
+        return params
+
+    def __setstate__(self, state: dict):
+        if not isinstance(state, dict):
+            err_msg = f'The `state` is wrong! Expected `{type({"a": 1})}`, ' \
+                      f'got `{type(state)}`.'
+            raise ValueError(err_msg)
+        self.check_params(**state)
+        is_fitted = ('deep_ensemble_' in state)
+        if is_fitted:
+            if 'names_of_deep_ensemble_' not in state:
+                err_msg = 'The `names_of_deep_ensemble_` is not found ' \
+                          'in the `state`!'
+                raise ValueError(err_msg)
+            if 'feature_vector_size_' not in state:
+                err_msg = 'The `feature_vector_size_` is not found ' \
+                          'in the `state`!'
+                raise ValueError(err_msg)
+            if 'preprocessor_' not in state:
+                err_msg = 'The `preprocessor_` is not found in the `state`!'
+                raise ValueError(err_msg)
+            if 'postprocessor_' not in state:
+                err_msg = 'The `postprocessor_` is not found in the `state`!'
+                raise ValueError(err_msg)
+        self.set_params(**state)
+        if hasattr(self, 'deep_ensemble_'):
+            del self.deep_ensemble_
+        if hasattr(self, 'names_of_deep_ensemble_'):
+            del self.names_of_deep_ensemble_
+        if hasattr(self, 'preprocessor_'):
+            del self.preprocessor_
+        if hasattr(self, 'postprocessor_'):
+            del self.postprocessor_
+        if hasattr(self, 'random_gen_'):
+            del self.random_gen_
+        gc.collect()
+        if self.clear_session:
+            tf.keras.backend.clear_session()
+        if is_fitted:
+            self.feature_vector_size_ = state['feature_vector_size_']
+            self.names_of_deep_ensemble_ = copy.deepcopy(
+                state['names_of_deep_ensemble_']
+            )
+            self.preprocessor_ = copy.deepcopy(state['preprocessor_'])
+            self.postprocessor_ = copy.deepcopy(state['postprocessor_'])
+            if 'random_gen_' in state:
+                self.random_gen_ = copy.deepcopy(state['random_gen_'])
+            else:
+                self.random_gen_ = np.random.default_rng(
+                    seed=(self.random_seed if hasattr(self, 'random_seed')
+                          else None)
+                )
+            self.deep_ensemble_ = []
+            for alg_id in range(self.ensemble_size):
+                model_name = self.names_of_deep_ensemble_[alg_id]
+                new_model = build_neural_network(
+                    input_size=self.feature_vector_size_,
+                    layer_size=self.hidden_layer_size,
+                    n_layers=self.n_layers,
+                    dropout_rate=self.dropout_rate,
+                    scale_coeff=self.postprocessor_.scale_[0],
+                    nn_name=model_name
+                )
+                new_model.build(input_shape=(None, self.feature_vector_size_))
+                new_model.set_weights(state['deep_ensemble_'][alg_id])
+                self.deep_ensemble_.append(new_model)
+        return self
 
     @staticmethod
     def check_integer_param(param_name: str, **kwargs):

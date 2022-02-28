@@ -1,7 +1,7 @@
 numpy
 scipy
 six
-sklearn
-tensorflow
+scikit-learn
+tensorflow-gpu
 tensorflow_addons
 tensorflow_probability
