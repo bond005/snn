@@ -19,7 +19,6 @@ from sklearn.utils import check_X_y, check_array
 from sklearn.utils.validation import check_is_fitted
 import tensorflow as tf
 import tensorflow_addons as tfa
-import tensorflow_probability as tfp
 
 
 def build_preprocessor(X: np.ndarray, colnames: List[str],
@@ -207,40 +206,32 @@ def build_neural_network(input_size: int, layer_size: int, n_classes: int,
             seed=random.randint(0, 2147483647)
         )
     output_layer = tf.keras.layers.Dense(
-        units=2,
+        units=1,
         activation=None,
         use_bias=False,
         kernel_initializer=kernel_initializer,
-        name=f'{nn_name}_output'
+        name=f'{nn_name}_regression'
     )(hidden_layer)
-    bayesian_layer = tfp.layers.DistributionLambda(
-        lambda t: tfp.distributions.Normal(
-            loc=t[..., :1],
-            scale=1e-6 + tf.math.softplus((1.0 / scale_coeff) * t[..., 1:])
-        ),
-        name=f'{nn_name}_distribution'
-    )(output_layer)
     neural_network = tf.keras.Model(
         inputs=feature_vector,
-        outputs=[bayesian_layer, cls_layer],
+        outputs=[output_layer, cls_layer],
         name=nn_name
     )
-    negloglik = lambda y, rv_y: -rv_y.log_prob(y)
     radam = tfa.optimizers.RectifiedAdam(learning_rate=3e-4)
     ranger = tfa.optimizers.Lookahead(radam, sync_period=6, slow_step_size=0.5)
     losses = {
-        f'{nn_name}_distribution': negloglik,
+        f'{nn_name}_regression': tf.keras.losses.MeanAbsoluteError(),
         f'{nn_name}_classification': tf.keras.losses.CategoricalCrossentropy(
             label_smoothing=0.05,
             from_logits=True
         )
     }
     loss_weights = {
-        f'{nn_name}_distribution': 1.0,
-        f'{nn_name}_classification': 0.5
+        f'{nn_name}_regression': 1.0,
+        f'{nn_name}_classification': 0.2
     }
     metrics = {
-        f'{nn_name}_distribution': [
+        f'{nn_name}_regression': [
             tf.keras.metrics.MeanAbsoluteError()
         ]
     }
@@ -253,49 +244,6 @@ def build_neural_network(input_size: int, layer_size: int, n_classes: int,
     return neural_network
 
 
-def predict_with_single_nn(input_data: np.ndarray,
-                           model_for_prediction: tf.keras.Model,
-                           batch_size: int, output_scaler: StandardScaler) \
-        -> Tuple[np.ndarray, np.ndarray]:
-    if len(input_data.shape) != 2:
-        err_msg = f'The `input_data` argument is wrong! Expected 2-D array, ' \
-                  f'got {len(input_data.shape)}-D one!'
-        raise ValueError(err_msg)
-    n_batches = int(np.ceil(input_data.shape[0] / float(batch_size)))
-    pred_mean = []
-    pred_std = []
-    for batch_idx in range(n_batches):
-        batch_start = batch_idx * batch_size
-        batch_end = min(input_data.shape[0], batch_start + batch_size)
-        instant_predictions = model_for_prediction(
-            input_data[batch_start:batch_end]
-        )[0]
-        if not isinstance(instant_predictions, tfp.distributions.Distribution):
-            err_msg = f'Minibatch {batch_idx}: predictions are wrong! ' \
-                      f'Expected tfp.distributions.Distribution, ' \
-                      f'got {type(instant_predictions)}.'
-            raise ValueError(err_msg)
-        instant_mean = instant_predictions.mean()
-        instant_std = instant_predictions.stddev()
-        del instant_predictions
-        if not isinstance(instant_mean, np.ndarray):
-            instant_mean = instant_mean.numpy()
-        if not isinstance(instant_std, np.ndarray):
-            instant_std = instant_std.numpy()
-        instant_mean = instant_mean.astype(np.float64).flatten()
-        instant_std = instant_std.astype(np.float64).flatten()
-        pred_mean.append(instant_mean)
-        pred_std.append(instant_std)
-        del instant_mean, instant_std
-    pred_mean = np.concatenate(pred_mean)
-    pred_std = np.concatenate(pred_std)
-    pred_mean = output_scaler.inverse_transform(
-        pred_mean.reshape((input_data.shape[0], 1))
-    ).flatten()
-    pred_std *= output_scaler.scale_[0]
-    return pred_mean, pred_std * pred_std
-
-
 def predict_by_ensemble(input_data: np.ndarray,
                         preprocessing: Pipeline,
                         ensemble: List[tf.keras.Model],
@@ -303,18 +251,13 @@ def predict_by_ensemble(input_data: np.ndarray,
                         minibatch: int) -> np.ndarray:
     num_samples = input_data.shape[0]
     ensemble_size = len(ensemble)
-    predictions_of_ensemble = np.empty((ensemble_size, num_samples, 2),
+    predictions_of_ensemble = np.empty((ensemble_size, num_samples),
                                        dtype=np.float64)
     X = preprocessing.transform(input_data).astype(np.float32)
     for model_idx, cur_model in enumerate(ensemble):
-        y_mean, y_var = predict_with_single_nn(
-            input_data=X,
-            model_for_prediction=cur_model,
-            output_scaler=postprocessing,
-            batch_size=minibatch
-        )
-        predictions_of_ensemble[model_idx, :, 0] = y_mean
-        predictions_of_ensemble[model_idx, :, 1] = y_var
+        y_mean = cur_model.predict(X, batch_size=minibatch)
+        y_mean = postprocessing.inverse_transform(y_mean).flatten()
+        predictions_of_ensemble[model_idx, :] = y_mean
     return np.mean(predictions_of_ensemble, axis=0)
 
 
@@ -480,8 +423,11 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
         y_ = y_[all_indices]
         del all_indices
         gc.collect()
-        y_class_ = discretize_targets(y_, (self.ensemble_size * 3) // 2,
-                                      self.verbose)
+        y_class_ = discretize_targets(
+            targets=y_,
+            min_freq=int(round(1.5 / self.validation_fraction)),
+            verbose=self.verbose
+        )
         self.n_classes_ = int(np.max(y_class_) + 1)
         y_class__ = np.zeros((y_class_.shape[0], self.n_classes_),
                              dtype=np.float32)
@@ -496,11 +442,15 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
                 print('Class {0:>02}: {1:>{2}} samples'.format(class_idx, freq,
                                                                max_num_width))
             print('')
-        splitting = list(StratifiedKFold(
-            n_splits=self.ensemble_size,
-            shuffle=True,
-            random_state=self.random_gen_.integers(0, 2147483647)
-        ).split(X_, y_class_))
+        splitting = []
+        for _ in range(self.ensemble_size):
+            instant_splitting = list(StratifiedKFold(
+                n_splits=int(round(1.0 / self.validation_fraction)),
+                shuffle=True,
+                random_state=self.random_gen_.integers(0, 2147483647)
+            ).split(X_, y_class_))
+            splitting.append(instant_splitting[0])
+            del instant_splitting
         self.feature_vector_size_ = X_.shape[1]
         self.deep_ensemble_ = []
         self.names_of_deep_ensemble_ = []
@@ -509,7 +459,7 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
         for alg_id in range(self.ensemble_size):
             model_uuid = str(uuid.uuid1()).split('-')[0]
             model_name = f'snn_regressor_{alg_id + 1}_{model_uuid}'
-            regression_output_name = f'{model_name}_distribution'
+            regression_output_name = f'{model_name}_regression'
             self.names_of_deep_ensemble_.append(model_name)
             train_index, test_index = splitting[alg_id]
             steps_per_epoch = len(train_index) // self.minibatch_size
@@ -628,7 +578,7 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
             for old_layer, new_layer in zip(old_model.layers, new_model.layers):
                 if old_layer.name.endswith('_classification'):
                     copy_weight = True
-                elif old_layer.name.endswith('_output'):
+                elif old_layer.name.endswith('_regression'):
                     copy_weight = True
                 else:
                     if re_for_hidden_layer.search(old_layer.name) is None:

@@ -33,9 +33,9 @@ class TestRegressor(unittest.TestCase):
                 os.remove(self.temp_file_name)
 
     def test_fit_predict(self):
-        snn_regressor = SNNRegressor(ensemble_size=5, minibatch_size=8,
+        snn_regressor = SNNRegressor(ensemble_size=3, minibatch_size=8,
                                      n_layers=6, hidden_layer_size=32,
-                                     verbose=True)
+                                     validation_fraction=0.1, verbose=True)
         snn_regressor.fit(self.X_, self.y_)
         y_pred = snn_regressor.predict(self.X_)
         self.assertIsInstance(y_pred, np.ndarray)
@@ -44,9 +44,9 @@ class TestRegressor(unittest.TestCase):
         self.assertGreaterEqual(score, 0.0)
 
     def test_copy(self):
-        snn_regressor1 = SNNRegressor(ensemble_size=5, minibatch_size=8,
+        snn_regressor1 = SNNRegressor(ensemble_size=3, minibatch_size=8,
                                       n_layers=6, hidden_layer_size=32,
-                                      verbose=True)
+                                      validation_fraction=0.1, verbose=True)
         snn_regressor1.fit(self.X_, self.y_)
         y_pred1 = snn_regressor1.predict(self.X_)
         snn_regressor2 = copy.copy(snn_regressor1)
@@ -65,9 +65,9 @@ class TestRegressor(unittest.TestCase):
                                    msg=err_msg)
 
     def test_deepcopy(self):
-        snn_regressor1 = SNNRegressor(ensemble_size=5, minibatch_size=8,
+        snn_regressor1 = SNNRegressor(ensemble_size=3, minibatch_size=8,
                                       n_layers=6, hidden_layer_size=32,
-                                      verbose=True)
+                                      validation_fraction=0.1, verbose=True)
         snn_regressor1.fit(self.X_, self.y_)
         y_pred1 = snn_regressor1.predict(self.X_)
         snn_regressor2 = copy.deepcopy(snn_regressor1)
@@ -86,9 +86,9 @@ class TestRegressor(unittest.TestCase):
                                    msg=err_msg)
 
     def test_serialization(self):
-        snn_regressor1 = SNNRegressor(ensemble_size=5, minibatch_size=8,
+        snn_regressor1 = SNNRegressor(ensemble_size=3, minibatch_size=8,
                                       n_layers=4, hidden_layer_size=32,
-                                      verbose=True)
+                                      validation_fraction=0.1, verbose=True)
         snn_regressor1.fit(self.X_, self.y_)
         y_pred1 = snn_regressor1.predict(self.X_)
         with tempfile.NamedTemporaryFile(mode='w', delete=True) as fp:
