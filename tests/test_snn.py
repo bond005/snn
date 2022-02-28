@@ -39,8 +39,8 @@ class TestRegressor(unittest.TestCase):
         snn_regressor.fit(self.X_, self.y_)
         y_pred = snn_regressor.predict(self.X_)
         self.assertIsInstance(y_pred, np.ndarray)
-        self.assertEqual((self.y_.shape[0], 2), y_pred.shape)
-        score = mean_absolute_error(y_true=self.y_, y_pred=y_pred[:, 0])
+        self.assertEqual((self.y_.shape[0],), y_pred.shape)
+        score = mean_absolute_error(y_true=self.y_, y_pred=y_pred)
         self.assertGreaterEqual(score, 0.0)
 
     def test_copy(self):
@@ -53,15 +53,9 @@ class TestRegressor(unittest.TestCase):
         y_pred2 = snn_regressor2.predict(self.X_)
         self.assertEqual(y_pred1.shape, y_pred2.shape)
         for sample_idx in range(y_pred1.shape[0]):
-            err_msg = f'[{sample_idx}, 0]: {y_pred1[sample_idx, 0]} != ' \
-                      f'{y_pred2[sample_idx, 0]}'
-            self.assertAlmostEqual(y_pred1[sample_idx, 0],
-                                   y_pred2[sample_idx, 0],
-                                   msg=err_msg)
-            err_msg = f'[{sample_idx}, 1]: {y_pred1[sample_idx, 1]} != ' \
-                      f'{y_pred2[sample_idx, 1]}'
-            self.assertAlmostEqual(y_pred1[sample_idx, 1],
-                                   y_pred2[sample_idx, 1],
+            err_msg = f'[{sample_idx}]: {y_pred1[sample_idx]} != ' \
+                      f'{y_pred2[sample_idx]}'
+            self.assertAlmostEqual(y_pred1[sample_idx], y_pred2[sample_idx],
                                    msg=err_msg)
 
     def test_deepcopy(self):
@@ -74,15 +68,9 @@ class TestRegressor(unittest.TestCase):
         y_pred2 = snn_regressor2.predict(self.X_)
         self.assertEqual(y_pred1.shape, y_pred2.shape)
         for sample_idx in range(y_pred1.shape[0]):
-            err_msg = f'[{sample_idx}, 0]: {y_pred1[sample_idx, 0]} != ' \
-                      f'{y_pred2[sample_idx, 0]}'
-            self.assertAlmostEqual(y_pred1[sample_idx, 0],
-                                   y_pred2[sample_idx, 0],
-                                   msg=err_msg)
-            err_msg = f'[{sample_idx}, 1]: {y_pred1[sample_idx, 1]} != ' \
-                      f'{y_pred2[sample_idx, 1]}'
-            self.assertAlmostEqual(y_pred1[sample_idx, 1],
-                                   y_pred2[sample_idx, 1],
+            err_msg = f'[{sample_idx}]: {y_pred1[sample_idx]} != ' \
+                      f'{y_pred2[sample_idx]}'
+            self.assertAlmostEqual(y_pred1[sample_idx], y_pred2[sample_idx],
                                    msg=err_msg)
 
     def test_serialization(self):
@@ -102,15 +90,9 @@ class TestRegressor(unittest.TestCase):
         y_pred2 = snn_regressor2.predict(self.X_)
         self.assertEqual(y_pred1.shape, y_pred2.shape)
         for sample_idx in range(y_pred1.shape[0]):
-            err_msg = f'[{sample_idx}, 0]: {y_pred1[sample_idx, 0]} != ' \
-                      f'{y_pred2[sample_idx, 0]}'
-            self.assertAlmostEqual(y_pred1[sample_idx, 0],
-                                   y_pred2[sample_idx, 0],
-                                   msg=err_msg)
-            err_msg = f'[{sample_idx}, 1]: {y_pred1[sample_idx, 1]} != ' \
-                      f'{y_pred2[sample_idx, 1]}'
-            self.assertAlmostEqual(y_pred1[sample_idx, 1],
-                                   y_pred2[sample_idx, 1],
+            err_msg = f'[{sample_idx}]: {y_pred1[sample_idx]} != ' \
+                      f'{y_pred2[sample_idx]}'
+            self.assertAlmostEqual(y_pred1[sample_idx], y_pred2[sample_idx],
                                    msg=err_msg)
 
 
