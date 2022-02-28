@@ -7,110 +7,20 @@ import uuid
 
 import numpy as np
 from sklearn.base import BaseEstimator, RegressorMixin
-from sklearn.compose import ColumnTransformer
 from sklearn.decomposition import PCA
 from sklearn.feature_selection import VarianceThreshold
-from sklearn.impute import SimpleImputer
 from sklearn.model_selection import StratifiedKFold
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler, MinMaxScaler
-from sklearn.preprocessing import Binarizer, KBinsDiscretizer
+from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import KBinsDiscretizer
 from sklearn.utils import check_X_y, check_array
 from sklearn.utils.validation import check_is_fitted
 import tensorflow as tf
 import tensorflow_addons as tfa
 
 
-def build_preprocessor(X: np.ndarray, colnames: List[str],
-                       verbose: bool, seed: int) -> Pipeline:
-    X_ = Pipeline(steps=[
-        (
-            'imputer', SimpleImputer(
-                missing_values=np.nan, strategy='constant',
-                fill_value=-1.0
-            )
-        ),
-        (
-            'scaler',
-            MinMaxScaler()
-        )
-    ]).fit_transform(X)
-    X_ = np.rint(X_ * 100000.0).astype(np.int32)
-    binary_features = dict()
-    categorical_features = dict()
-    removed_features = []
-    for col_idx in range(X.shape[1]):
-        values = set(X_[:, col_idx].tolist())
-        if verbose:
-            print(f'Column {col_idx} "{colnames[col_idx]}" has '
-                  f'{len(values)} unique values.')
-        if len(values) > 1:
-            if len(values) < 3:
-                binary_features[col_idx] = np.min(X[:, col_idx])
-            else:
-                categorical_features[col_idx] = len(values)
-        else:
-            removed_features.append(col_idx)
-        del values
-    del X_
-    all_features = set(range(X.shape[1]))
-    useful_features = sorted(list(all_features - set(removed_features)))
-    if len(useful_features) == 0:
-        raise ValueError('Training inputs are bad. All features are removed.')
-    if verbose:
-        print(f'There are {X.shape[1]} features.')
-        if len(removed_features) > 0:
-            print(f'These features will be removed: '
-                  f'{[colnames[col_idx] for col_idx in removed_features]}.')
-    transformers = []
-    if verbose:
-        if (len(categorical_features) > 0) and (len(binary_features) > 0):
-            print(f'There are {len(categorical_features)} categorical '
-                  f'features and {len(binary_features)} binary features.')
-        elif len(categorical_features) > 0:
-            print(f'There are {len(categorical_features)} categorical '
-                  f'features.')
-        else:
-            print(f'There are {len(binary_features)} binary features.')
-    for col_idx in categorical_features:
-        n_unique_values = categorical_features[col_idx]
-        transformers.append(
-            (
-                colnames[col_idx],
-                KBinsDiscretizer(
-                    n_bins=min(max(n_unique_values // 3, 3), 256),
-                    encode='ordinal',
-                    strategy=('quantile' if n_unique_values > 50 else 'kmeans')
-                ),
-                (col_idx,)
-            )
-        )
-    for col_idx in binary_features:
-        transformers.append(
-            (
-                colnames[col_idx],
-                Binarizer(threshold=0.0),
-                (col_idx,)
-            )
-        )
+def build_preprocessor(X: np.ndarray, seed: int) -> Pipeline:
     preprocessor = Pipeline(steps=[
-        (
-            'imputer', SimpleImputer(
-                missing_values=np.nan, strategy='constant',
-                fill_value=-1.0
-            )
-        ),
-        (
-            'minmax_scaler',
-            MinMaxScaler()
-        ),
-        (
-            'composite_transformer', ColumnTransformer(
-                transformers=transformers,
-                sparse_threshold=0.0,
-                n_jobs=1
-            )
-        ),
         (
             'selector',
             VarianceThreshold()
@@ -124,7 +34,7 @@ def build_preprocessor(X: np.ndarray, colnames: List[str],
             PCA(random_state=seed)
         )
     ])
-    preprocessor.fit(X)
+    preprocessor.fit(X.astype(np.float64))
     return preprocessor
 
 
@@ -208,7 +118,7 @@ def build_neural_network(input_size: int, layer_size: int, n_classes: int,
     output_layer = tf.keras.layers.Dense(
         units=1,
         activation=None,
-        use_bias=False,
+        use_bias=True,
         kernel_initializer=kernel_initializer,
         name=f'{nn_name}_regression'
     )(hidden_layer)
@@ -217,18 +127,18 @@ def build_neural_network(input_size: int, layer_size: int, n_classes: int,
         outputs=[output_layer, cls_layer],
         name=nn_name
     )
-    radam = tfa.optimizers.RectifiedAdam(learning_rate=3e-4)
+    radam = tfa.optimizers.RectifiedAdam(learning_rate=1e-3)
     ranger = tfa.optimizers.Lookahead(radam, sync_period=6, slow_step_size=0.5)
     losses = {
         f'{nn_name}_regression': tf.keras.losses.MeanAbsoluteError(),
         f'{nn_name}_classification': tf.keras.losses.CategoricalCrossentropy(
-            label_smoothing=0.05,
+            label_smoothing=0.01,
             from_logits=True
         )
     }
     loss_weights = {
         f'{nn_name}_regression': 1.0,
-        f'{nn_name}_classification': 0.2
+        f'{nn_name}_classification': 0.5
     }
     metrics = {
         f'{nn_name}_regression': [
@@ -245,7 +155,6 @@ def build_neural_network(input_size: int, layer_size: int, n_classes: int,
 
 
 def predict_by_ensemble(input_data: np.ndarray,
-                        preprocessing: Pipeline,
                         ensemble: List[tf.keras.Model],
                         postprocessing: StandardScaler,
                         minibatch: int) -> np.ndarray:
@@ -253,17 +162,19 @@ def predict_by_ensemble(input_data: np.ndarray,
     ensemble_size = len(ensemble)
     predictions_of_ensemble = np.empty((ensemble_size, num_samples),
                                        dtype=np.float64)
-    X = preprocessing.transform(input_data).astype(np.float32)
     for model_idx, cur_model in enumerate(ensemble):
-        y_mean = cur_model.predict(X, batch_size=minibatch)[0]
-        y_mean = postprocessing.inverse_transform(y_mean).flatten()
-        predictions_of_ensemble[model_idx, :] = y_mean
-    return np.mean(predictions_of_ensemble, axis=0)
+        y_mean = cur_model.predict(input_data, batch_size=minibatch)[0]
+        predictions_of_ensemble[model_idx, :] = y_mean.flatten()
+    y = np.mean(predictions_of_ensemble, axis=0)
+    y = postprocessing.inverse_transform(y.reshape((y.shape[0], 1))).flatten()
+    return y
 
 
-def discretize_targets(targets: np.ndarray, min_freq: int,
-                       verbose: bool) -> np.ndarray:
-    n_classes = max(3, min(100, int(round(np.sqrt(targets.shape[0])))))
+def discretize_targets(targets: np.ndarray) -> np.ndarray:
+    set_of_target_values = set()
+    for cur in targets:
+        set_of_target_values.add(int(round(100.0 * cur)))
+    n_classes = max(3, len(set_of_target_values) // 20)
     discretized = KBinsDiscretizer(
         n_bins=n_classes,
         encode='ordinal',
@@ -272,68 +183,6 @@ def discretize_targets(targets: np.ndarray, min_freq: int,
         targets.reshape((targets.shape[0], 1))
     ).reshape((targets.shape[0],)).astype(np.int32)
     discretized = discretized.astype(np.int32)
-    freq = np.zeros((n_classes,), dtype=np.int32)
-    for class_idx in discretized:
-        freq[class_idx] += 1
-    indices_of_classes = dict()
-    for sample_idx, class_idx in enumerate(discretized):
-        if class_idx in indices_of_classes:
-            indices_of_classes[class_idx].append(sample_idx)
-        else:
-            indices_of_classes[class_idx] = [sample_idx]
-    if verbose:
-        print(f'Number of non-empty classes is {len(indices_of_classes)} '
-              f'from {n_classes}.')
-        max_cls_width = len(str(n_classes))
-        max_num_width = max(map(lambda it: str(len(indices_of_classes[it])),
-                                indices_of_classes))
-        for class_idx in sorted(list(indices_of_classes.keys())):
-            print('Class {0:<{1}}   {2:>{3}}'.format(
-                class_idx, max_cls_width, len(indices_of_classes[class_idx]),
-                max_num_width
-            ))
-        print('')
-    for class_idx in sorted(list(indices_of_classes.keys())):
-        if len(indices_of_classes[class_idx]) <= max(0, min_freq):
-            del indices_of_classes[class_idx]
-    if len(indices_of_classes) < 3:
-        err_msg = f'Number of non-empty classes = {len(indices_of_classes)} ' \
-                  f'is too small!'
-        raise ValueError(err_msg)
-    list_of_nonempty_classes = sorted(list(indices_of_classes.keys()))
-    set_of_nonempty_classes = set(list_of_nonempty_classes)
-    indices_map = dict()
-    for sample_idx in range(discretized.shape[0]):
-        class_idx = discretized[sample_idx]
-        if class_idx not in set_of_nonempty_classes:
-            best_class_idx = list_of_nonempty_classes[0]
-            best_dist = min(map(
-                lambda other_idx: abs(targets[sample_idx] - targets[other_idx]),
-                indices_of_classes[best_class_idx]
-            ))
-            for cur_class_idx in list_of_nonempty_classes[1:]:
-                cur_dist = min(map(
-                    lambda other_idx: abs(targets[sample_idx] -
-                                          targets[other_idx]),
-                    indices_of_classes[cur_class_idx]
-                ))
-                if cur_dist < best_dist:
-                    best_class_idx = cur_class_idx
-                    best_dist = cur_dist
-            discretized[sample_idx] = best_class_idx
-        class_idx = discretized[sample_idx]
-        if class_idx not in indices_map:
-            indices_map[class_idx] = len(indices_map)
-    for sample_idx in range(discretized.shape[0]):
-        class_idx = discretized[sample_idx]
-        discretized[sample_idx] = indices_map[class_idx]
-    new_number_of_classes = int(np.max(discretized) + 1)
-    if verbose:
-        print(f'New number of classes is {new_number_of_classes}.')
-        print('')
-    assert np.min(discretized) == 0
-    assert np.max(discretized) == (new_number_of_classes - 1)
-    assert len(set(discretized.tolist())) == new_number_of_classes
     return discretized
 
 
@@ -405,15 +254,15 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
             seed=(self.random_seed if hasattr(self, 'random_seed') else None)
         )
         self.preprocessor_ = build_preprocessor(
-            X_, feature_names,
-            verbose=self.verbose,
-            seed=self.random_gen_.integers(0, 2147483647)
+            X_, seed=self.random_gen_.integers(0, 2147483647)
         )
         if self.verbose:
             print('')
         self.postprocessor_ = StandardScaler(with_mean=True, with_std=True)
         self.postprocessor_.fit(y_.reshape((y_.shape[0], 1)))
-        X_ = self.preprocessor_.transform(X_)
+        X_ = self.preprocessor_.transform(
+            X_.astype(np.float64)
+        ).astype(np.float32)
         y_ = self.postprocessor_.transform(
             y_.reshape((y_.shape[0], 1))
         ).reshape((y_.shape[0],))
@@ -423,11 +272,7 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
         y_ = y_[all_indices]
         del all_indices
         gc.collect()
-        y_class_ = discretize_targets(
-            targets=y_,
-            min_freq=int(round(1.5 / self.validation_fraction)),
-            verbose=self.verbose
-        )
+        y_class_ = discretize_targets(y_)
         self.n_classes_ = int(np.max(y_class_) + 1)
         y_class__ = np.zeros((y_class_.shape[0], self.n_classes_),
                              dtype=np.float32)
@@ -454,8 +299,6 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
         self.feature_vector_size_ = X_.shape[1]
         self.deep_ensemble_ = []
         self.names_of_deep_ensemble_ = []
-        max_epochs = 1000
-        patience = 15
         for alg_id in range(self.ensemble_size):
             model_uuid = str(uuid.uuid1()).split('-')[0]
             model_name = f'snn_regressor_{alg_id + 1}_{model_uuid}'
@@ -501,11 +344,11 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
                 tf.keras.callbacks.EarlyStopping(
                     monitor=f'val_{regression_output_name}_mean_absolute_error',
                     restore_best_weights=True, mode='min',
-                    patience=patience, verbose=self.verbose
+                    patience=self.patience, verbose=self.verbose
                 )
             ]
             new_model.fit(
-                train_dataset, epochs=max_epochs,
+                train_dataset, epochs=self.max_epochs,
                 steps_per_epoch=steps_per_epoch,
                 callbacks=callbacks, validation_data=val_dataset,
                 verbose=(2 if self.verbose else 0)
@@ -523,10 +366,11 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
                                'n_classes_'])
         X_ = check_array(X, force_all_finite='allow-nan',
                          estimator='SNNRegressor')
-        X_ = self.preprocessor_.transform(X_)
+        X_ = self.preprocessor_.transform(
+            X_.astype(np.float64)
+        ).astype(np.float32)
         y = predict_by_ensemble(
             input_data=X_,
-            preprocessing=self.preprocessor_,
             postprocessing=self.postprocessor_,
             ensemble=self.deep_ensemble_,
             minibatch=self.minibatch_size
