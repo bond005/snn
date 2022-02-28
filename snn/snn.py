@@ -6,7 +6,6 @@ from typing import List, Tuple, Union
 import uuid
 
 import numpy as np
-import six
 from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.decomposition import PCA
@@ -491,6 +490,7 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
             )
             del callbacks, train_dataset, val_dataset
             self.deep_ensemble_.append(new_model)
+            gc.collect()
         return self
 
     def predict(self, X):
