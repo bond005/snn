@@ -255,7 +255,7 @@ def predict_by_ensemble(input_data: np.ndarray,
                                        dtype=np.float64)
     X = preprocessing.transform(input_data).astype(np.float32)
     for model_idx, cur_model in enumerate(ensemble):
-        y_mean = cur_model.predict(X, batch_size=minibatch)
+        y_mean = cur_model.predict(X, batch_size=minibatch)[0]
         y_mean = postprocessing.inverse_transform(y_mean).flatten()
         predictions_of_ensemble[model_idx, :] = y_mean
     return np.mean(predictions_of_ensemble, axis=0)
