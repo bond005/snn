@@ -21,55 +21,6 @@ from sklearn.utils.validation import check_is_fitted
 import tensorflow as tf
 import tensorflow_addons as tfa
 import tensorflow_probability as tfp
-from tensorflow.python.framework import tensor_util
-from tensorflow.python.keras.utils import losses_utils, tf_utils
-from tensorflow.python.ops.losses import util as tf_losses_util
-
-
-class LossFunctionWrapper(tf.keras.losses.Loss):
-    def __init__(self,
-                 fn,
-                 reduction=losses_utils.ReductionV2.AUTO,
-                 name=None,
-                 **kwargs):
-        super(LossFunctionWrapper, self).__init__(reduction=reduction,
-                                                  name=name)
-        self.fn = fn
-        self._fn_kwargs = kwargs
-
-    def call(self, y_true, y_pred):
-        if tensor_util.is_tensor(y_pred) and tensor_util.is_tensor(y_true):
-            y_pred, y_true = tf_losses_util.squeeze_or_expand_dimensions(
-                y_pred, y_true
-            )
-        return self.fn(y_true, y_pred, **self._fn_kwargs)
-
-    def get_config(self):
-        config = {}
-        for k, v in six.iteritems(self._fn_kwargs):
-            config[k] = tf.keras.backend.eval(v) \
-                if tf_utils.is_tensor_or_variable(v) \
-                else v
-        base_config = super(LossFunctionWrapper, self).get_config()
-        return dict(list(base_config.items()) + list(config.items()))
-
-
-def npairs_loss(labels, feature_vectors):
-    feature_vectors_normalized = tf.math.l2_normalize(feature_vectors, axis=1)
-    logits = tf.divide(
-        tf.matmul(
-            feature_vectors_normalized, tf.transpose(feature_vectors_normalized)
-        ),
-        0.5  # temperature
-    )
-    return tfa.losses.npairs_loss(tf.squeeze(labels), logits)
-
-
-class NPairsLoss(LossFunctionWrapper):
-    def __init__(self, reduction=losses_utils.ReductionV2.AUTO,
-                 name='m_pairs_loss'):
-        super(NPairsLoss, self).__init__(npairs_loss, name=name,
-                                         reduction=reduction)
 
 
 def build_preprocessor(X: np.ndarray, colnames: List[str],
@@ -179,8 +130,8 @@ def build_preprocessor(X: np.ndarray, colnames: List[str],
     return preprocessor
 
 
-def build_neural_network(input_size: int, layer_size: int, n_layers: int,
-                         dropout_rate: float, scale_coeff: float,
+def build_neural_network(input_size: int, layer_size: int, n_classes: int,
+                         n_layers: int, dropout_rate: float, scale_coeff: float,
                          nn_name: str) -> tf.keras.Model:
     feature_vector = tf.keras.layers.Input(
         shape=(input_size,), dtype=tf.float32,
@@ -220,12 +171,12 @@ def build_neural_network(input_size: int, layer_size: int, n_layers: int,
         kernel_initializer = tf.compat.v1.keras.initializers.lecun_normal(
             seed=random.randint(0, 2147483647)
         )
-    projection_layer = tf.keras.layers.Dense(
-        units=50,
+    cls_layer = tf.keras.layers.Dense(
+        units=n_classes,
         activation=None,
-        use_bias=False,
+        use_bias=True,
         kernel_initializer=kernel_initializer,
-        name=f'{nn_name}_projection'
+        name=f'{nn_name}_classification'
     )(hidden_layer)
     for layer_idx in range((2 * n_layers) // 3 + 1, n_layers + 1):
         try:
@@ -272,7 +223,7 @@ def build_neural_network(input_size: int, layer_size: int, n_layers: int,
     )(output_layer)
     neural_network = tf.keras.Model(
         inputs=feature_vector,
-        outputs=[bayesian_layer, projection_layer],
+        outputs=[bayesian_layer, cls_layer],
         name=nn_name
     )
     negloglik = lambda y, rv_y: -rv_y.log_prob(y)
@@ -280,11 +231,14 @@ def build_neural_network(input_size: int, layer_size: int, n_layers: int,
     ranger = tfa.optimizers.Lookahead(radam, sync_period=6, slow_step_size=0.5)
     losses = {
         f'{nn_name}_distribution': negloglik,
-        f'{nn_name}_projection': NPairsLoss()
+        f'{nn_name}_classification': tf.keras.losses.CategoricalCrossentropy(
+            label_smoothing=0.05,
+            from_logits=True
+        )
     }
     loss_weights = {
         f'{nn_name}_distribution': 1.0,
-        f'{nn_name}_projection': 0.5
+        f'{nn_name}_classification': 0.5
     }
     metrics = {
         f'{nn_name}_distribution': [
@@ -451,16 +405,19 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
         y_ = y_[all_indices]
         del all_indices
         gc.collect()
-        # n_classes = max(3, min(100, int(round(np.sqrt(y_.shape[0])))))
-        n_classes = 5
+        self.n_classes_ = max(3, min(100, int(round(np.sqrt(y_.shape[0])))))
         y_class_ = KBinsDiscretizer(
-            n_bins=n_classes,
+            n_bins=self.n_classes_,
             encode='ordinal',
             strategy='kmeans'
         ).fit_transform(y_.reshape((y_.shape[0], 1))).reshape((y_.shape[0],))
         y_class_ = y_class_.astype(np.int32)
+        y_class__ = np.zeros((y_class_.shape[0], self.n_classes_),
+                             dtype=np.float32)
+        for sample_idx, class_idx in enumerate(y_class_):
+            y_class__[sample_idx, class_idx] = 1.0
         if self.verbose:
-            class_freq = np.zeros((n_classes,), dtype=np.int32)
+            class_freq = np.zeros((self.n_classes_,), dtype=np.int32)
             for class_idx in y_class_:
                 class_freq[class_idx] += 1
             max_num_width = max(map(lambda it: len(str(it)), class_freq))
@@ -477,7 +434,7 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
         self.deep_ensemble_ = []
         self.names_of_deep_ensemble_ = []
         max_epochs = 1000
-        patience = 15
+        patience = 5
         for alg_id in range(self.ensemble_size):
             model_uuid = str(uuid.uuid1()).split('-')[0]
             model_name = f'snn_regressor_{alg_id + 1}_{model_uuid}'
@@ -490,7 +447,7 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
                     X_[train_index],
                     (
                         y_[train_index].flatten(),
-                        y_class_[train_index].flatten()
+                        y_class__[train_index]
                     )
                 )
             ).repeat().shuffle(len(train_index)).batch(self.minibatch_size)
@@ -499,13 +456,14 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
                     X_[test_index],
                     (
                         y_[test_index].flatten(),
-                        y_class_[test_index].flatten()
+                        y_class__[test_index]
                     )
                 )
             ).batch(self.minibatch_size)
             new_model = build_neural_network(
                 input_size=self.feature_vector_size_,
                 layer_size=self.hidden_layer_size,
+                n_classes=self.n_classes_,
                 n_layers=self.n_layers,
                 dropout_rate=self.dropout_rate,
                 scale_coeff=self.postprocessor_.scale_[0],
@@ -538,7 +496,8 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
     def predict(self, X):
         check_is_fitted(self, ['deep_ensemble_', 'names_of_deep_ensemble_',
                                'preprocessor_', 'postprocessor_',
-                               'random_gen_'])
+                               'random_gen_', 'feature_vector_size_',
+                               'n_classes_'])
         X_ = check_array(X, force_all_finite='allow-nan',
                          estimator='SNNRegressor')
         X_ = self.preprocessor_.transform(X_)
@@ -584,6 +543,7 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
             new_model = build_neural_network(
                 input_size=self.feature_vector_size_,
                 layer_size=self.hidden_layer_size,
+                n_classes=self.n_classes_,
                 n_layers=self.n_layers,
                 dropout_rate=self.dropout_rate,
                 scale_coeff=self.postprocessor_.scale_[0],
@@ -593,7 +553,7 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
             old_model = self.deep_ensemble_[alg_id]
             n_copied = 0
             for old_layer, new_layer in zip(old_model.layers, new_model.layers):
-                if old_layer.name.endswith('_projection'):
+                if old_layer.name.endswith('_classification'):
                     copy_weight = True
                 elif old_layer.name.endswith('_output'):
                     copy_weight = True
@@ -630,7 +590,8 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
         try:
             check_is_fitted(self, ['deep_ensemble_', 'names_of_deep_ensemble_',
                                    'preprocessor_', 'postprocessor_',
-                                   'random_gen_', 'feature_vector_size_'])
+                                   'random_gen_', 'feature_vector_size_',
+                                   'n_classes_'])
             is_fitted = True
         except:
             is_fitted = False
@@ -641,6 +602,7 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
             result.postprocessor_ = self.postprocessor_
             result.random_gen_ = self.random_gen_
             result.feature_vector_size_ = self.feature_vector_size_
+            result.n_classes_ = self.n_classes_
         return result
 
     def __deepcopy__(self, memodict={}):
@@ -663,12 +625,14 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
         try:
             check_is_fitted(self, ['deep_ensemble_', 'names_of_deep_ensemble_',
                                    'preprocessor_', 'postprocessor_',
-                                   'random_gen_', 'feature_vector_size_'])
+                                   'random_gen_', 'feature_vector_size_',
+                                   'n_classes_'])
             is_fitted = True
         except:
             is_fitted = False
         if is_fitted:
             result.feature_vector_size_ = self.feature_vector_size_
+            result.n_classes_ = self.n_classes_
             result.names_of_deep_ensemble_ = copy.deepcopy(
                 self.names_of_deep_ensemble_,
                 memo=memodict
@@ -690,7 +654,8 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
         try:
             check_is_fitted(self, ['deep_ensemble_', 'names_of_deep_ensemble_',
                                    'preprocessor_', 'postprocessor_',
-                                   'random_gen_', 'feature_vector_size_'])
+                                   'random_gen_', 'feature_vector_size_',
+                                   'n_classes_'])
             is_fitted = True
         except:
             is_fitted = False
@@ -699,6 +664,7 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
                 self.names_of_deep_ensemble_
             )
             params['feature_vector_size_'] = self.feature_vector_size_
+            params['n_classes_'] = self.n_classes_
             params['preprocessor_'] = copy.deepcopy(self.preprocessor_)
             params['postprocessor_'] = copy.deepcopy(self.postprocessor_)
             if self.random_gen_ is None:
@@ -750,6 +716,7 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
             tf.keras.backend.clear_session()
         if is_fitted:
             self.feature_vector_size_ = state['feature_vector_size_']
+            self.n_classes_ = state['n_classes_']
             self.names_of_deep_ensemble_ = copy.deepcopy(
                 state['names_of_deep_ensemble_']
             )
@@ -768,6 +735,7 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
                 new_model = build_neural_network(
                     input_size=self.feature_vector_size_,
                     layer_size=self.hidden_layer_size,
+                    n_classes=self.n_classes_,
                     n_layers=self.n_layers,
                     dropout_rate=self.dropout_rate,
                     scale_coeff=self.postprocessor_.scale_[0],

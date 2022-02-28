@@ -33,7 +33,7 @@ class TestRegressor(unittest.TestCase):
                 os.remove(self.temp_file_name)
 
     def test_fit_predict(self):
-        snn_regressor = SNNRegressor(ensemble_size=5, minibatch_size=16,
+        snn_regressor = SNNRegressor(ensemble_size=5, minibatch_size=8,
                                      n_layers=6, hidden_layer_size=32,
                                      verbose=True)
         snn_regressor.fit(self.X_, self.y_)
@@ -44,7 +44,7 @@ class TestRegressor(unittest.TestCase):
         self.assertGreaterEqual(score, 0.0)
 
     def test_copy(self):
-        snn_regressor1 = SNNRegressor(ensemble_size=5, minibatch_size=16,
+        snn_regressor1 = SNNRegressor(ensemble_size=5, minibatch_size=8,
                                       n_layers=6, hidden_layer_size=32,
                                       verbose=True)
         snn_regressor1.fit(self.X_, self.y_)
@@ -65,7 +65,7 @@ class TestRegressor(unittest.TestCase):
                                    msg=err_msg)
 
     def test_deepcopy(self):
-        snn_regressor1 = SNNRegressor(ensemble_size=5, minibatch_size=16,
+        snn_regressor1 = SNNRegressor(ensemble_size=5, minibatch_size=8,
                                       n_layers=6, hidden_layer_size=32,
                                       verbose=True)
         snn_regressor1.fit(self.X_, self.y_)
@@ -86,7 +86,7 @@ class TestRegressor(unittest.TestCase):
                                    msg=err_msg)
 
     def test_serialization(self):
-        snn_regressor1 = SNNRegressor(ensemble_size=5, minibatch_size=16,
+        snn_regressor1 = SNNRegressor(ensemble_size=5, minibatch_size=8,
                                       n_layers=4, hidden_layer_size=32,
                                       verbose=True)
         snn_regressor1.fit(self.X_, self.y_)
