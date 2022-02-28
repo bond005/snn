@@ -480,7 +480,8 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
         y_ = y_[all_indices]
         del all_indices
         gc.collect()
-        y_class_ = discretize_targets(y_, 3, self.verbose)
+        y_class_ = discretize_targets(y_, (self.ensemble_size * 3) // 2,
+                                      self.verbose)
         self.n_classes_ = int(np.max(y_class_) + 1)
         y_class__ = np.zeros((y_class_.shape[0], self.n_classes_),
                              dtype=np.float32)
