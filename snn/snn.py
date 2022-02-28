@@ -488,8 +488,9 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
                 callbacks=callbacks, validation_data=val_dataset,
                 verbose=(2 if self.verbose else 0)
             )
-            del callbacks, train_dataset, val_dataset
+            del callbacks, train_dataset, val_dataset, train_index, test_index
             self.deep_ensemble_.append(new_model)
+            del new_model
             gc.collect()
         return self
 
