@@ -505,7 +505,7 @@ class SNNRegressor(BaseEstimator, RegressorMixin):
         self.deep_ensemble_ = []
         self.names_of_deep_ensemble_ = []
         max_epochs = 1000
-        patience = 5
+        patience = 15
         for alg_id in range(self.ensemble_size):
             model_uuid = str(uuid.uuid1()).split('-')[0]
             model_name = f'snn_regressor_{alg_id + 1}_{model_uuid}'
